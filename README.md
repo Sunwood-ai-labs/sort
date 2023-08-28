@@ -101,3 +101,6 @@ Below is the gist of how to instantiate and update SORT. See the ['__main__'](ht
     ...
     
  
+### Brief explanation(JP)
+
+[SORT_algorithm.md](SORT_algorithm.md)
