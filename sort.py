@@ -91,64 +91,167 @@ def convert_x_to_bbox(x,score=None):
     return np.array([x[0]-w/2.,x[1]-h/2.,x[0]+w/2.,x[1]+h/2.,score]).reshape((1,5))
 
 
+
 class KalmanBoxTracker(object):
-  """
-  This class represents the internal state of individual tracked objects observed as bbox.
-  """
-  count = 0
-  def __init__(self,bbox):
     """
-    Initialises a tracker using initial bounding box.
+    このクラスは、バウンディングボックスとして観測される個々のトラッキングオブジェクトの内部状態を表します。
+    カルマンフィルタは、ノイズのあるデータからシステムの状態を推定するための方法です。
     """
-    #define constant velocity model
-    self.kf = KalmanFilter(dim_x=7, dim_z=4) 
-    self.kf.F = np.array([[1,0,0,0,1,0,0],[0,1,0,0,0,1,0],[0,0,1,0,0,0,1],[0,0,0,1,0,0,0],  [0,0,0,0,1,0,0],[0,0,0,0,0,1,0],[0,0,0,0,0,0,1]])
-    self.kf.H = np.array([[1,0,0,0,0,0,0],[0,1,0,0,0,0,0],[0,0,1,0,0,0,0],[0,0,0,1,0,0,0]])
 
-    self.kf.R[2:,2:] *= 10.
-    self.kf.P[4:,4:] *= 1000. #give high uncertainty to the unobservable initial velocities
-    self.kf.P *= 10.
-    self.kf.Q[-1,-1] *= 0.01
-    self.kf.Q[4:,4:] *= 0.01
+    # トラッカーの総数を追跡するための静的変数。これは、新しいトラッカーが作成されるたびにインクリメントされます。
+    count = 0
 
-    self.kf.x[:4] = convert_bbox_to_z(bbox)
-    self.time_since_update = 0
-    self.id = KalmanBoxTracker.count
-    KalmanBoxTracker.count += 1
-    self.history = []
-    self.hits = 0
-    self.hit_streak = 0
-    self.age = 0
+    def __init__(self, bbox):
+        """
+        初期のバウンディングボックスを使用してトラッカーを初期化します。
+        :param bbox: 初期バウンディングボックスの座標。
+        """
+        # 定数速度モデルのカルマンフィルタを定義します。
+        self.kf = KalmanFilter(dim_x=7, dim_z=4)
 
-  def update(self,bbox):
-    """
-    Updates the state vector with observed bbox.
-    """
-    self.time_since_update = 0
-    self.history = []
-    self.hits += 1
-    self.hit_streak += 1
-    self.kf.update(convert_bbox_to_z(bbox))
+        # 状態遷移行列 'F' を定義します。これは、一つの状態から次の状態への変化をモデル化します。
+        # このモデルでは、位置と速度の両方を考慮しています。
+        self.kf.F = np.array([[1,0,0,0,1,0,0],[0,1,0,0,0,1,0],[0,0,1,0,0,0,1],[0,0,0,1,0,0,0],  [0,0,0,0,1,0,0],[0,0,0,0,0,1,0],[0,0,0,0,0,0,1]])
 
-  def predict(self):
-    """
-    Advances the state vector and returns the predicted bounding box estimate.
-    """
-    if((self.kf.x[6]+self.kf.x[2])<=0):
-      self.kf.x[6] *= 0.0
-    self.kf.predict()
-    self.age += 1
-    if(self.time_since_update>0):
-      self.hit_streak = 0
-    self.time_since_update += 1
-    self.history.append(convert_x_to_bbox(self.kf.x))
-    return self.history[-1]
+        # 観測行列 'H' を定義します。これは、実際の状態空間から観測空間へのマッピングを行います。
+        # この場合、実際の位置のみが観測されます。
+        self.kf.H = np.array([[1,0,0,0,0,0,0],[0,1,0,0,0,0,0],[0,0,1,0,0,0,0],[0,0,0,1,0,0,0]])
 
-  def get_state(self):
-    """
-    Returns the current bounding box estimate.
-    """
-    return convert_x_to_bbox(self.kf.x)
+        # 観測ノイズの共分散を調整します。これは、観測の不確実性を示しています。
+        self.kf.R[2:, 2:] *= 10.
+
+        # 初期の速度に対して高い不確実性を与えます。
+        # 速度は初めて観測されていないため、この不確実性が存在します。
+        self.kf.P[4:, 4:] *= 1000.
+
+        # プロセスノイズの共分散行列を調整します。これは、モデルが完璧でないことを考慮したものです。
+        self.kf.Q[-1, -1] *= 0.01
+        self.kf.Q[4:, 4:] *= 0.01
+
+        # 提供されたバウンディングボックスを使用してフィルタの初期状態を初期化します。
+        self.kf.x[:4] = convert_bbox_to_z(bbox)
+
+        # トラッカーの状態に関するその他の変数を初期化します。
+        self.time_since_update = 0  # 最後の更新からの経過時間
+        self.id = KalmanBoxTracker.count  # このトラッカーのID
+        KalmanBoxTracker.count += 1  # トラッカーの総数を更新
+        self.history = []  # バウンディングボックスの予測の履歴
+        self.hits = 0  # ディテクションマッチの回数
+        self.hit_streak = 0  # 連続ディテクションマッチの回数
+        self.age = 0  # トラッカーの年齢
+
+    def update(self, bbox):
+        """
+        観測されたバウンディングボックスで状態ベクトルを更新します。
+        """
+        # 最後の更新からの経過時間をリセットします。
+        self.time_since_update = 0
+
+        # トラッカーの履歴をクリアします。
+        self.history = []
+
+        # トラッカーが正確な観測にマッチした回数をインクリメントします。
+        self.hits += 1
+
+        # 連続してマッチした回数をインクリメントします。
+        self.hit_streak += 1
+
+        # カルマンフィルタを使用して、新しい観測データで状態を更新します。
+        self.kf.update(convert_bbox_to_z(bbox))
+
+    def predict(self):
+        """
+        状態ベクトルを進め、予測されたバウンディングボックスの推定値を返します。
+        """
+        # もし予測された高さが0以下になる場合、高さの変化の速度を0にリセットします。
+        if (self.kf.x[6] + self.kf.x[2]) <= 0:
+            self.kf.x[6] *= 0.0
+
+        # カルマンフィルタを使用して次の状態を予測します。
+        self.kf.predict()
+
+        # トラッカーの「年齢」をインクリメントします。これはトラッカーが存在しているフレーム数を示します。
+        self.age += 1
+
+        # 最後の更新から時間が経過した場合、連続マッチのストリークをリセットします。
+        if self.time_since_update > 0:
+            self.hit_streak = 0
+
+        # 最後の更新からの経過時間をインクリメントします。
+        self.time_since_update += 1
+
+        # 予測されたバウンディングボックスの状態を履歴に追加します。
+        self.history.append(convert_x_to_bbox(self.kf.x))
+
+        # 最新の予測されたバウンディングボックスを返します。
+        return self.history[-1]
+
+    def get_state(self):
+        """
+        現在のバウンディングボックスの推定値を返します。
+        """
+        # カルマンフィルタの現在の状態からバウンディングボックスの座標を取得して返します。
+        return convert_x_to_bbox(self.kf.x)
+
+
+# class KalmanBoxTracker(object):
+#   """
+#   This class represents the internal state of individual tracked objects observed as bbox.
+#   """
+#   count = 0
+#   def __init__(self,bbox):
+#     """
+#     Initialises a tracker using initial bounding box.
+#     """
+#     #define constant velocity model
+#     self.kf = KalmanFilter(dim_x=7, dim_z=4) 
+#     self.kf.F = np.array([[1,0,0,0,1,0,0],[0,1,0,0,0,1,0],[0,0,1,0,0,0,1],[0,0,0,1,0,0,0],  [0,0,0,0,1,0,0],[0,0,0,0,0,1,0],[0,0,0,0,0,0,1]])
+#     self.kf.H = np.array([[1,0,0,0,0,0,0],[0,1,0,0,0,0,0],[0,0,1,0,0,0,0],[0,0,0,1,0,0,0]])
+
+#     self.kf.R[2:,2:] *= 10.
+#     self.kf.P[4:,4:] *= 1000. #give high uncertainty to the unobservable initial velocities
+#     self.kf.P *= 10.
+#     self.kf.Q[-1,-1] *= 0.01
+#     self.kf.Q[4:,4:] *= 0.01
+
+#     self.kf.x[:4] = convert_bbox_to_z(bbox)
+#     self.time_since_update = 0
+#     self.id = KalmanBoxTracker.count
+#     KalmanBoxTracker.count += 1
+#     self.history = []
+#     self.hits = 0
+#     self.hit_streak = 0
+#     self.age = 0
+
+#   def update(self,bbox):
+#     """
+#     Updates the state vector with observed bbox.
+#     """
+#     self.time_since_update = 0
+#     self.history = []
+#     self.hits += 1
+#     self.hit_streak += 1
+#     self.kf.update(convert_bbox_to_z(bbox))
+
+#   def predict(self):
+#     """
+#     Advances the state vector and returns the predicted bounding box estimate.
+#     """
+#     if((self.kf.x[6]+self.kf.x[2])<=0):
+#       self.kf.x[6] *= 0.0
+#     self.kf.predict()
+#     self.age += 1
+#     if(self.time_since_update>0):
+#       self.hit_streak = 0
+#     self.time_since_update += 1
+#     self.history.append(convert_x_to_bbox(self.kf.x))
+#     return self.history[-1]
+
+#   def get_state(self):
+#     """
+#     Returns the current bounding box estimate.
+#     """
+#     return convert_x_to_bbox(self.kf.x)
 
 
 def associate_detections_to_trackers(detections,trackers,iou_threshold = 0.3):
